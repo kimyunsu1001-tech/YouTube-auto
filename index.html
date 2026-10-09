@@ -30,25 +30,33 @@
   .ok { color:var(--ok); } .err { color:var(--err); }
   small { color:var(--muted); display:block; margin-top:8px; line-height:1.4; }
   .hidden { display:none; }
+  label.btn { flex:1; min-width:120px; padding:14px 12px; border-radius:12px; font-size:1rem; font-weight:600; background:var(--accent); color:#04243a; cursor:pointer; text-align:center; }
+  label.btn.alt { background:var(--card); color:var(--fg); }
+  .sr { position:absolute; width:1px; height:1px; opacity:0; overflow:hidden; pointer-events:none; }
+  label.btn:focus-within { outline:2px solid var(--fg); outline-offset:2px; }
 </style>
 </head>
 <body>
 <main>
   <h1>📶 와이파이 스캐너</h1>
-  <p class="sub">와이파이 화면(QR 코드 또는 글자)을 카메라로 비추면 이름과 비밀번호를 읽어 바로 연결할 수 있게 도와줘요.</p>
-
-  <div class="cam">
-    <video id="video" playsinline muted></video>
-    <div class="frame"></div>
-    <div class="status" id="status">카메라를 시작하세요.</div>
-  </div>
+  <p class="sub">와이파이 화면(QR 코드 또는 글자)을 카메라로 찍으면 이름과 비밀번호를 읽어 바로 연결할 수 있게 도와줘요.</p>
 
   <div class="row">
-    <button id="startBtn">카메라 시작</button>
-    <button id="ocrBtn" class="alt" disabled>글자 인식 (OCR)</button>
-    <button id="flipBtn" class="alt" disabled>전/후면 전환</button>
-    <button id="photoBtn" class="alt">📷 사진으로 인식</button>
-    <input id="photoIn" type="file" accept="image/*" capture="environment" hidden>
+    <label class="btn" for="photoIn">📷 사진 찍어서 인식</label>
+    <label class="btn alt" for="albumIn">🖼 앨범에서 선택</label>
+    <input id="photoIn" class="sr" type="file" accept="image/*" capture="environment">
+    <input id="albumIn" class="sr" type="file" accept="image/*">
+  </div>
+  <div class="status" id="status" style="position:static;border-radius:12px;background:var(--card)">와이파이 화면(QR 또는 글자)을 사진으로 찍어 주세요.</div>
+
+  <div class="cam hidden" id="camBox" style="margin-top:12px">
+    <video id="video" playsinline muted></video>
+    <div class="frame"></div>
+  </div>
+  <div class="row">
+    <button id="startBtn" class="alt">실시간 카메라로 스캔</button>
+    <button id="ocrBtn" class="alt hidden">이 화면 글자 인식</button>
+    <button id="flipBtn" class="alt hidden">전/후면 전환</button>
   </div>
 
   <div class="card hidden" id="result">
@@ -80,6 +88,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const video = $("video"), statusEl = $("status");
+const live = on => { $("camBox").classList.toggle("hidden", !on); $("ocrBtn").classList.toggle("hidden", !on); $("flipBtn").classList.toggle("hidden", !on); };
 let stream = null, facing = "environment", scanning = false, found = false;
 const canvas = document.createElement("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -125,7 +134,7 @@ function parseWifiText(text) {
 async function startCamera() {
   stopCamera();
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus("실시간 카메라를 쓸 수 없어요. \"사진으로 인식\" 버튼을 써보세요.", "err"); return;
+    setStatus("이 화면에서는 실시간 카메라를 쓸 수 없어요. 위의 \"사진 찍어서 인식\" 버튼을 써주세요.", "err"); return;
   }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -135,15 +144,15 @@ async function startCamera() {
     await video.play();
     found = false; scanning = true;
     $("startBtn").textContent = "다시 스캔";
-    $("ocrBtn").disabled = false; $("flipBtn").disabled = false;
+    live(true);
     setStatus("와이파이 QR 코드를 프레임 안에 맞춰주세요…");
     requestAnimationFrame(tick);
   } catch (e) {
-    setStatus("실시간 카메라를 쓸 수 없어요. \"사진으로 인식\" 버튼을 써보세요.", "err");
+    setStatus("이 화면에서는 실시간 카메라를 쓸 수 없어요. 위의 \"사진 찍어서 인식\" 버튼을 써주세요.", "err");
   }
 }
 function stopCamera() {
-  scanning = false;
+  scanning = false; live(false);
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
 }
@@ -276,8 +285,10 @@ function esc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;"
 
 $("startBtn").onclick = startCamera;
 $("ocrBtn").onclick = runOCR;
-$("photoBtn").onclick = () => $("photoIn").click();
-$("photoIn").onchange = e => { scanPhoto(e.target.files[0]).catch(err => setStatus("사진 처리 실패: " + err.message, "err")); e.target.value = ""; };
+for (const id of ["photoIn", "albumIn"]) $(id).onchange = e => {
+  const f = e.target.files[0]; e.target.value = "";
+  scanPhoto(f).catch(err => setStatus("사진 처리 실패: " + (err.message || err), "err"));
+};
 $("flipBtn").onclick = () => { facing = facing === "environment" ? "user" : "environment"; startCamera(); };
 window.addEventListener("pagehide", stopCamera);
 </script>
