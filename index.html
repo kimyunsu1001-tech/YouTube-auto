@@ -68,7 +68,7 @@
 
   <small>
     ※ 웹 브라우저는 보안상 와이파이에 직접 접속할 수 없어요. "연결하기"를 누르면 비밀번호를 클립보드에 복사하고
-    기기의 와이파이 설정을 열어 드려요. 카메라는 HTTPS(또는 localhost)에서만 동작해요.
+    어디서 붙여넣으면 되는지 안내해 드려요. 카메라는 HTTPS(또는 localhost)에서만 동작해요.
     모든 인식은 기기 안에서 처리되고 서버로 전송되지 않아요.
   </small>
 </main>
@@ -251,9 +251,7 @@ $("connectBtn").onclick = async () => {
   const ua = navigator.userAgent;
   let steps, link = "";
   if (/Android/i.test(ua)) {
-    steps = "Wi‑Fi 설정이 열리면 <b>" + esc(ssid) + "</b> 를 선택하고 비밀번호를 붙여넣기 하세요.";
-    link = '<a href="intent:#Intent;action=android.settings.WIFI_SETTINGS;end" style="color:#38bdf8">Wi‑Fi 설정 열기</a>';
-    location.href = "intent:#Intent;action=android.settings.WIFI_SETTINGS;end";
+    steps = "설정 → Wi‑Fi 에서 <b>" + esc(ssid) + "</b> 를 선택하고 비밀번호를 붙여넣기 하세요.";
   } else if (/iPhone|iPad|iPod/i.test(ua)) {
     steps = "설정 → Wi‑Fi 에서 <b>" + esc(ssid) + "</b> 를 선택하고 비밀번호를 붙여넣기 하세요. (아래 QR을 다른 기기의 기본 카메라로 스캔해도 바로 연결돼요)";
   } else {
