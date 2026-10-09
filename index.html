@@ -295,6 +295,13 @@ $("qrBtn").onclick = () => {
 function esc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
 $("startBtn").onclick = startCamera;
+// 일반 웹사이트(HTTPS)로 열렸을 때: 카메라를 가장 먼저 보여주고 바로 켠다
+if (window.self === window.top && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  const sb = $("startBtn");
+  sb.classList.remove("alt"); sb.textContent = "📷 카메라 다시 켜기";
+  setStatus("카메라를 켜는 중… 권한을 허용해 주세요.");
+  startCamera();
+}
 $("ocrBtn").onclick = runOCR;
 $("manualBtn").onclick = () => {
   const t = $("manual").value.trim();
