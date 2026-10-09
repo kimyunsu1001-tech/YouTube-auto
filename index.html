@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>와이파이 스캐너</title>
 <style>
-  :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --ok:#4ade80; --err:#f87171; }
+  :root { color-scheme: dark; --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --ok:#4ade80; --err:#f87171; }
   * { box-sizing: border-box; }
   body { margin:0; font-family: system-ui, -apple-system, "Noto Sans KR", sans-serif; background:var(--bg); color:var(--fg); }
   main { max-width: 520px; margin: 0 auto; padding: 16px; }
@@ -47,6 +47,8 @@
     <button id="startBtn">카메라 시작</button>
     <button id="ocrBtn" class="alt" disabled>글자 인식 (OCR)</button>
     <button id="flipBtn" class="alt" disabled>전/후면 전환</button>
+    <button id="photoBtn" class="alt">📷 사진으로 인식</button>
+    <input id="photoIn" type="file" accept="image/*" capture="environment" hidden>
   </div>
 
   <div class="card hidden" id="result">
@@ -123,7 +125,7 @@ function parseWifiText(text) {
 async function startCamera() {
   stopCamera();
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    setStatus("이 브라우저/주소에서는 카메라를 쓸 수 없어요 (HTTPS 필요).", "err"); return;
+    setStatus("실시간 카메라를 쓸 수 없어요. \"사진으로 인식\" 버튼을 써보세요.", "err"); return;
   }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -137,7 +139,7 @@ async function startCamera() {
     setStatus("와이파이 QR 코드를 프레임 안에 맞춰주세요…");
     requestAnimationFrame(tick);
   } catch (e) {
-    setStatus("카메라 권한이 필요해요: " + (e.message || e.name), "err");
+    setStatus("실시간 카메라를 쓸 수 없어요. \"사진으로 인식\" 버튼을 써보세요.", "err");
   }
 }
 function stopCamera() {
@@ -164,24 +166,59 @@ function tick() {
 }
 
 /* ---------- OCR ---------- */
+async function recognize(cv) {
+  // 1) Claude 비전(sample) 사용 가능하면 우선, 2) 아니면 Tesseract
+  try {
+    const sample = window.claude && window.claude.use ? await window.claude.use("sample") : null;
+    if (sample && (await sample.limits()).images) {
+      setStatus("사진 속 와이파이 정보를 읽는 중…");
+      const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.85));
+      const j = await sample.json(
+        "이 사진은 와이파이 정보 화면입니다. 네트워크 이름(SSID)과 비밀번호를 찾아 JSON으로만 답하세요: " +
+        '{"ssid":"","pw":""}. 찾지 못한 값은 빈 문자열. 글자를 추측하지 말고 보이는 그대로 적으세요.',
+        { images: [blob], modelTier: "quick" });
+      return j && (j.ssid || j.pw) ? { ssid: String(j.ssid || ""), pw: String(j.pw || ""), type: "WPA" } : null;
+    }
+  } catch (e) { /* 아래 Tesseract로 */ }
+  if (typeof Tesseract === "undefined") throw new Error("글자 인식 라이브러리를 불러오지 못했어요");
+  setStatus("글자 인식 중… (처음엔 언어 데이터를 받느라 시간이 걸려요)");
+  const { data } = await Tesseract.recognize(cv, "kor+eng", {
+    logger: m => { if (m.status === "recognizing text") setStatus("글자 인식 중… " + Math.round(m.progress * 100) + "%"); }
+  });
+  return parseWifiText(data.text);
+}
+
 async function runOCR() {
   if (!stream) return;
-  if (typeof Tesseract === "undefined") { setStatus("OCR 라이브러리를 불러오지 못했어요 (인터넷 확인).", "err"); return; }
   $("ocrBtn").disabled = true;
-  const w = video.videoWidth, h = video.videoHeight;
-  canvas.width = w; canvas.height = h;
-  ctx.drawImage(video, 0, 0, w, h);
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0);
+  await finishOCR(canvas);
+  $("ocrBtn").disabled = false;
+}
+async function finishOCR(cv) {
   try {
-    setStatus("글자 인식 중… (처음엔 언어 데이터를 받느라 시간이 걸려요)");
-    const { data } = await Tesseract.recognize(canvas, "kor+eng", {
-      logger: m => { if (m.status === "recognizing text") setStatus("글자 인식 중… " + Math.round(m.progress * 100) + "%"); }
-    });
-    const wifi = parseWifiText(data.text);
+    const wifi = await recognize(cv);
     if (wifi) { found = true; showResult(wifi, "화면 글자"); }
     else setStatus("와이파이 정보를 찾지 못했어요. 글자를 더 크고 선명하게 비춰보세요.", "err");
-  } catch (e) {
-    setStatus("글자 인식 실패: " + (e.message || e), "err");
-  } finally { $("ocrBtn").disabled = false; }
+  } catch (e) { setStatus("글자 인식 실패: " + (e.message || e), "err"); }
+}
+
+// 사진 파일(카메라 촬영 포함)로 인식
+async function scanPhoto(file) {
+  if (!file) return;
+  setStatus("사진 분석 중…");
+  const bmp = await createImageBitmap(file);
+  const s = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const cv = document.createElement("canvas");
+  cv.width = Math.round(bmp.width * s); cv.height = Math.round(bmp.height * s);
+  const c = cv.getContext("2d", { willReadFrequently: true });
+  c.drawImage(bmp, 0, 0, cv.width, cv.height);
+  const img = c.getImageData(0, 0, cv.width, cv.height);
+  const code = jsQR(img.data, cv.width, cv.height, { inversionAttempts: "attemptBoth" });
+  const wifi = code && parseWifiQR(code.data);
+  if (wifi) { showResult(wifi, "QR 코드"); return; }
+  await finishOCR(cv);
 }
 
 /* ---------- 결과 / 연결 ---------- */
@@ -241,6 +278,8 @@ function esc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;"
 
 $("startBtn").onclick = startCamera;
 $("ocrBtn").onclick = runOCR;
+$("photoBtn").onclick = () => $("photoIn").click();
+$("photoIn").onchange = e => { scanPhoto(e.target.files[0]).catch(err => setStatus("사진 처리 실패: " + err.message, "err")); e.target.value = ""; };
 $("flipBtn").onclick = () => { facing = facing === "environment" ? "user" : "environment"; startCamera(); };
 window.addEventListener("pagehide", stopCamera);
 </script>
