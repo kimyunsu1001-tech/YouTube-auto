@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>와이파이 스캐너</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --ok:#4ade80; --err:#f87171; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Noto Sans KR", sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width: 520px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; margin: 8px 0 4px; }
+  p.sub { margin: 0 0 16px; color: var(--muted); font-size: .9rem; }
+  .cam { position:relative; background:#000; border-radius:16px; overflow:hidden; aspect-ratio: 3/4; }
+  video { width:100%; height:100%; object-fit:cover; display:block; }
+  .frame { position:absolute; inset:15% 12%; border:3px solid var(--accent); border-radius:16px; pointer-events:none; box-shadow:0 0 0 999px rgba(0,0,0,.35); }
+  .status { position:absolute; left:0; right:0; bottom:0; padding:8px 12px; font-size:.85rem; background:rgba(0,0,0,.6); }
+  .row { display:flex; gap:8px; margin:12px 0; flex-wrap:wrap; }
+  button { flex:1; min-width:120px; padding:12px; border:0; border-radius:12px; font-size:1rem; font-weight:600; background:var(--accent); color:#04243a; cursor:pointer; }
+  button.alt { background:var(--card); color:var(--fg); }
+  button:disabled { opacity:.5; }
+  .card { background:var(--card); border-radius:16px; padding:16px; margin-top:12px; }
+  .card h2 { font-size:1rem; margin:0 0 10px; }
+  label { display:block; font-size:.75rem; color:var(--muted); margin-top:10px; }
+  .field { display:flex; gap:8px; margin-top:4px; }
+  input { flex:1; padding:10px; border-radius:10px; border:1px solid #334155; background:#0f172a; color:var(--fg); font-size:1rem; min-width:0; }
+  .field button { flex:0 0 auto; min-width:0; padding:10px 14px; font-size:.9rem; }
+  #qrOut { display:flex; justify-content:center; margin-top:12px; }
+  #qrOut canvas, #qrOut img { background:#fff; padding:8px; border-radius:12px; max-width:100%; }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+  small { color:var(--muted); display:block; margin-top:8px; line-height:1.4; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>📶 와이파이 스캐너</h1>
+  <p class="sub">와이파이 화면(QR 코드 또는 글자)을 카메라로 비추면 이름과 비밀번호를 읽어 바로 연결할 수 있게 도와줘요.</p>
+
+  <div class="cam">
+    <video id="video" playsinline muted></video>
+    <div class="frame"></div>
+    <div class="status" id="status">카메라를 시작하세요.</div>
+  </div>
+
+  <div class="row">
+    <button id="startBtn">카메라 시작</button>
+    <button id="ocrBtn" class="alt" disabled>글자 인식 (OCR)</button>
+    <button id="flipBtn" class="alt" disabled>전/후면 전환</button>
+  </div>
+
+  <div class="card hidden" id="result">
+    <h2>인식된 와이파이</h2>
+    <label for="ssid">네트워크 이름 (SSID)</label>
+    <div class="field"><input id="ssid"><button class="alt" data-copy="ssid">복사</button></div>
+    <label for="pw">비밀번호</label>
+    <div class="field"><input id="pw"><button class="alt" data-copy="pw">복사</button></div>
+    <div class="row">
+      <button id="connectBtn">연결하기</button>
+      <button id="qrBtn" class="alt">연결용 QR 만들기</button>
+    </div>
+    <div id="guide"></div>
+    <div id="qrOut"></div>
+    <small>인식이 틀렸다면 위 칸에서 직접 고칠 수 있어요.</small>
+  </div>
+
+  <small>
+    ※ 웹 브라우저는 보안상 와이파이에 직접 접속할 수 없어요. "연결하기"를 누르면 비밀번호를 클립보드에 복사하고
+    기기의 와이파이 설정을 열어 드려요. 카메라는 HTTPS(또는 localhost)에서만 동작해요.
+    모든 인식은 기기 안에서 처리되고 서버로 전송되지 않아요.
+  </small>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const video = $("video"), statusEl = $("status");
+let stream = null, facing = "environment", scanning = false, found = false;
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = "status " + (cls || ""); }
+
+/* ---------- 파서 ---------- */
+// WIFI:T:WPA;S:이름;P:비번;H:false;;  (이스케이프: \\ \; \, \: \")
+function parseWifiQR(text) {
+  if (!/^WIFI:/i.test(text)) return null;
+  const body = text.slice(5);
+  const out = {};
+  let key = "", val = "", inKey = true, esc = false;
+  const flush = () => { if (key) out[key.toUpperCase()] = val; key = ""; val = ""; inKey = true; };
+  for (const ch of body) {
+    if (esc) { (inKey ? (key += ch) : (val += ch)); esc = false; }
+    else if (ch === "\\") esc = true;
+    else if (inKey && ch === ":") inKey = false;
+    else if (ch === ";") flush();
+    else (inKey ? (key += ch) : (val += ch));
+  }
+  flush();
+  if (!out.S) return null;
+  return { ssid: out.S, pw: out.P || "", type: out.T || "WPA" };
+}
+
+// 화면 글자에서 이름/비밀번호 추출
+function parseWifiText(text) {
+  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const grab = re => {
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(re);
+      if (m) { const v = (m[1] || "").trim() || (lines[i + 1] || "").trim(); if (v) return v; }
+    }
+    return "";
+  };
+  const ssid = grab(/(?:ssid|network(?:\s*name)?|wi-?fi(?:\s*name)?|와이파이(?:\s*이름)?|네트워크(?:\s*이름)?|공유기(?:\s*이름)?)\s*[:：=]\s*(.*)$/i);
+  const pw = grab(/(?:password|passcode|passphrase|pw|pwd|key|비밀번호|비번|암호|패스워드)\s*[:：=]\s*(.*)$/i);
+  return ssid || pw ? { ssid, pw, type: "WPA" } : null;
+}
+
+/* ---------- 카메라 ---------- */
+async function startCamera() {
+  stopCamera();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus("이 브라우저/주소에서는 카메라를 쓸 수 없어요 (HTTPS 필요).", "err"); return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    found = false; scanning = true;
+    $("startBtn").textContent = "다시 스캔";
+    $("ocrBtn").disabled = false; $("flipBtn").disabled = false;
+    setStatus("와이파이 QR 코드를 프레임 안에 맞춰주세요…");
+    requestAnimationFrame(tick);
+  } catch (e) {
+    setStatus("카메라 권한이 필요해요: " + (e.message || e.name), "err");
+  }
+}
+function stopCamera() {
+  scanning = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+}
+
+function tick() {
+  if (!scanning) return;
+  if (video.readyState === video.HAVE_ENOUGH_DATA && !found) {
+    const w = video.videoWidth, h = video.videoHeight;
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    const img = ctx.getImageData(0, 0, w, h);
+    const code = jsQR(img.data, w, h, { inversionAttempts: "attemptBoth" });
+    if (code && code.data) {
+      const wifi = parseWifiQR(code.data);
+      if (wifi) { found = true; showResult(wifi, "QR 코드"); return; }
+      setStatus("QR은 읽었지만 와이파이 코드가 아니에요.", "err");
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ---------- OCR ---------- */
+async function runOCR() {
+  if (!stream) return;
+  if (typeof Tesseract === "undefined") { setStatus("OCR 라이브러리를 불러오지 못했어요 (인터넷 확인).", "err"); return; }
+  $("ocrBtn").disabled = true;
+  const w = video.videoWidth, h = video.videoHeight;
+  canvas.width = w; canvas.height = h;
+  ctx.drawImage(video, 0, 0, w, h);
+  try {
+    setStatus("글자 인식 중… (처음엔 언어 데이터를 받느라 시간이 걸려요)");
+    const { data } = await Tesseract.recognize(canvas, "kor+eng", {
+      logger: m => { if (m.status === "recognizing text") setStatus("글자 인식 중… " + Math.round(m.progress * 100) + "%"); }
+    });
+    const wifi = parseWifiText(data.text);
+    if (wifi) { found = true; showResult(wifi, "화면 글자"); }
+    else setStatus("와이파이 정보를 찾지 못했어요. 글자를 더 크고 선명하게 비춰보세요.", "err");
+  } catch (e) {
+    setStatus("글자 인식 실패: " + (e.message || e), "err");
+  } finally { $("ocrBtn").disabled = false; }
+}
+
+/* ---------- 결과 / 연결 ---------- */
+function showResult(wifi, source) {
+  $("ssid").value = wifi.ssid; $("pw").value = wifi.pw;
+  $("result").classList.remove("hidden");
+  $("guide").innerHTML = ""; $("qrOut").innerHTML = "";
+  $("result").dataset.type = wifi.type;
+  setStatus("✅ " + source + "에서 \"" + wifi.ssid + "\" 인식 완료", "ok");
+  if (navigator.vibrate) navigator.vibrate(80);
+  $("result").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch { return false; }
+}
+
+document.addEventListener("click", async e => {
+  const id = e.target.dataset && e.target.dataset.copy;
+  if (!id) return;
+  const ok = await copy($(id).value);
+  e.target.textContent = ok ? "복사됨 ✓" : "실패";
+  setTimeout(() => (e.target.textContent = "복사"), 1500);
+});
+
+$("connectBtn").onclick = async () => {
+  const ssid = $("ssid").value, pw = $("pw").value;
+  const copied = pw ? await copy(pw) : false;
+  const ua = navigator.userAgent;
+  let steps, link = "";
+  if (/Android/i.test(ua)) {
+    steps = "Wi‑Fi 설정이 열리면 <b>" + esc(ssid) + "</b> 를 선택하고 비밀번호를 붙여넣기 하세요.";
+    link = '<a href="intent:#Intent;action=android.settings.WIFI_SETTINGS;end" style="color:#38bdf8">Wi‑Fi 설정 열기</a>';
+    location.href = "intent:#Intent;action=android.settings.WIFI_SETTINGS;end";
+  } else if (/iPhone|iPad|iPod/i.test(ua)) {
+    steps = "설정 → Wi‑Fi 에서 <b>" + esc(ssid) + "</b> 를 선택하고 비밀번호를 붙여넣기 하세요. (아래 QR을 다른 기기의 기본 카메라로 스캔해도 바로 연결돼요)";
+  } else {
+    steps = "컴퓨터의 Wi‑Fi 목록에서 <b>" + esc(ssid) + "</b> 를 선택하고 비밀번호를 붙여넣기 하세요.";
+  }
+  $("guide").innerHTML = '<small class="' + (copied ? "ok" : "err") + '">' +
+    (pw ? (copied ? "✓ 비밀번호가 클립보드에 복사됐어요. " : "비밀번호 자동 복사에 실패했어요. 위 \"복사\" 버튼을 눌러주세요. ") : "비밀번호가 없는 네트워크예요. ") +
+    steps + " " + link + "</small>";
+};
+
+$("qrBtn").onclick = () => {
+  const ssid = $("ssid").value, pw = $("pw").value;
+  const esc2 = s => s.replace(/([\\;,:"])/g, "\\$1");
+  const type = pw ? ($("result").dataset.type === "WEP" ? "WEP" : "WPA") : "nopass";
+  const qr = qrcode(0, "M");
+  qr.addData("WIFI:T:" + type + ";S:" + esc2(ssid) + ";" + (pw ? "P:" + esc2(pw) + ";" : "") + ";");
+  qr.make();
+  $("qrOut").innerHTML = qr.createImgTag(6, 8);
+};
+
+function esc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+$("startBtn").onclick = startCamera;
+$("ocrBtn").onclick = runOCR;
+$("flipBtn").onclick = () => { facing = facing === "environment" ? "user" : "environment"; startCamera(); };
+window.addEventListener("pagehide", stopCamera);
+</script>
+</body>
+</html>
