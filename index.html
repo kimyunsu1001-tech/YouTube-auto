@@ -82,6 +82,7 @@
       <button id="connectBtn">연결하기</button>
       <button id="qrBtn" class="alt">연결용 QR 만들기</button>
     </div>
+    <div class="row" id="iosRow" style="margin-top:0"><button id="profileBtn" class="alt">🍎 아이폰 프로필로 바로 연결</button></div>
     <div id="guide"></div>
     <div id="qrOut"></div>
     <small>인식이 틀렸다면 위 칸에서 직접 고칠 수 있어요.</small>
@@ -312,6 +313,38 @@ $("connectBtn").onclick = async () => {
     (pw ? (copied ? "✓ 비밀번호가 클립보드에 복사됐어요. " : "비밀번호 자동 복사에 실패했어요. 위 \"복사\" 버튼을 눌러주세요. ") : "비밀번호가 없는 네트워크예요. ") +
     steps + " " + link + "</small>";
 };
+
+// iOS: 와이파이 구성 프로필(.mobileconfig)을 받아 설치하면 비밀번호 입력 없이 바로 연결된다
+function xmlEsc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[c])); }
+function buildProfile(ssid, pw, type) {
+  const enc = !pw ? "None" : type === "WEP" ? "WEP" : "Any";
+  const u = () => (crypto.randomUUID ? crypto.randomUUID() : "00000000-0000-4000-8000-" + String(Date.now()).padStart(12, "0")).toUpperCase();
+  return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>' +
+    "<key>PayloadType</key><string>Configuration</string><key>PayloadVersion</key><integer>1</integer>" +
+    "<key>PayloadIdentifier</key><string>wifi-scanner." + u() + "</string><key>PayloadUUID</key><string>" + u() + "</string>" +
+    "<key>PayloadDisplayName</key><string>Wi-Fi: " + xmlEsc(ssid) + "</string>" +
+    "<key>PayloadContent</key><array><dict>" +
+    "<key>PayloadType</key><string>com.apple.wifi.managed</string><key>PayloadVersion</key><integer>1</integer>" +
+    "<key>PayloadIdentifier</key><string>wifi-scanner.wifi." + u() + "</string><key>PayloadUUID</key><string>" + u() + "</string>" +
+    "<key>PayloadDisplayName</key><string>Wi-Fi</string>" +
+    "<key>SSID_STR</key><string>" + xmlEsc(ssid) + "</string><key>HIDDEN_NETWORK</key><false/><key>AutoJoin</key><true/>" +
+    "<key>EncryptionType</key><string>" + enc + "</string>" +
+    (pw ? "<key>Password</key><string>" + xmlEsc(pw) + "</string>" : "") +
+    "</dict></array></dict></plist>";
+}
+$("profileBtn").onclick = () => {
+  const ssid = $("ssid").value, pw = $("pw").value;
+  if (!ssid) { $("guide").innerHTML = '<small class="err">네트워크 이름을 먼저 입력해 주세요.</small>'; return; }
+  const blob = new Blob([buildProfile(ssid, pw, $("result").dataset.type)], { type: "application/x-apple-aspen-config" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "wifi.mobileconfig";
+  document.body.appendChild(a); a.click(); a.remove();
+  $("guide").innerHTML = '<small class="ok">프로필을 받았어요. <b>설정 앱 → "프로필이 다운로드됨"</b>을 눌러 <b>설치</b>하면 ' + esc(ssid) + ' 에 바로 연결돼요. (서명되지 않은 프로필이라는 경고는 정상이에요.)</small>';
+};
+(function () {
+  const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  $("iosRow").classList.toggle("hidden", !ios);
+})();
 
 $("qrBtn").onclick = () => {
   const ssid = $("ssid").value, pw = $("pw").value;
