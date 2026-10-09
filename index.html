@@ -49,6 +49,16 @@
   </div>
   <div class="status" id="status" style="position:static;border-radius:12px;background:var(--card)">와이파이 화면(QR 또는 글자)을 사진으로 찍어 주세요.</div>
 
+  <div class="card" style="margin-top:12px">
+    <h2>사진이 안 될 때</h2>
+    <label for="manual">와이파이 정보를 붙여넣거나 직접 적어 주세요 (QR 문자열 <code>WIFI:…</code> 또는 "이름: … 비밀번호: …")</label>
+    <div class="field" style="flex-wrap:wrap">
+      <textarea id="manual" rows="3" placeholder="예) 와이파이: MyHome&#10;비밀번호: 12345678" style="flex:1 1 100%;padding:10px;border-radius:10px;border:1px solid #334155;background:#0f172a;color:var(--fg);font:inherit"></textarea>
+      <button id="manualBtn" class="alt" style="flex:1 1 100%">이 내용으로 연결 준비</button>
+    </div>
+    <small>이미지를 복사해 이 화면에 붙여넣기(길게 누르기 → 붙여넣기)해도 인식해요.</small>
+  </div>
+
   <div class="cam hidden" id="camBox" style="margin-top:12px">
     <video id="video" playsinline muted></video>
     <div class="frame"></div>
@@ -215,7 +225,8 @@ async function finishOCR(cv) {
 
 // 사진 파일(카메라 촬영 포함)로 인식
 async function scanPhoto(file) {
-  if (!file) return;
+  if (!file) { setStatus("사진이 선택되지 않았어요.", "err"); return; }
+  if (typeof jsQR === "undefined") throw new Error("QR 라이브러리를 불러오지 못했어요. 인터넷 연결을 확인하세요");
   setStatus("사진 분석 중…");
   const bmp = await createImageBitmap(file);
   const s = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
@@ -285,7 +296,20 @@ function esc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;"
 
 $("startBtn").onclick = startCamera;
 $("ocrBtn").onclick = runOCR;
+$("manualBtn").onclick = () => {
+  const t = $("manual").value.trim();
+  const w = parseWifiQR(t) || parseWifiText(t);
+  if (w) showResult(w, "입력한 내용");
+  else { showResult({ ssid: "", pw: "", type: "WPA" }, "직접 입력"); setStatus("인식하지 못했어요. 아래 칸에 이름과 비밀번호를 직접 적어 주세요.", "err"); }
+};
+document.addEventListener("paste", e => {
+  const it = [...(e.clipboardData ? e.clipboardData.items : [])].find(i => i.type.startsWith("image/"));
+  if (!it) return;
+  e.preventDefault();
+  scanPhoto(it.getAsFile()).catch(err => setStatus("사진 처리 실패: " + (err.message || err), "err"));
+});
 for (const id of ["photoIn", "albumIn"]) $(id).onchange = e => {
+  setStatus("사진을 받았어요. 분석 중…");
   const f = e.target.files[0]; e.target.value = "";
   scanPhoto(f).catch(err => setStatus("사진 처리 실패: " + (err.message || err), "err"));
 };
