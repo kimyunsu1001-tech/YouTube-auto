@@ -68,6 +68,9 @@
     <button id="ocrBtn" class="alt hidden">이 화면 글자 인식</button>
     <button id="flipBtn" class="alt hidden">전/후면 전환</button>
   </div>
+  <label id="autoOcrRow" class="hidden" style="display:flex;gap:8px;align-items:center;color:var(--muted);font-size:.9rem;margin:-4px 0 8px">
+    <input id="autoOcr" type="checkbox" checked style="flex:0 0 auto;width:18px;height:18px"> QR이 없으면 글자도 자동으로 읽기
+  </label>
 
   <div class="card hidden" id="result">
     <h2>인식된 와이파이</h2>
@@ -98,7 +101,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const video = $("video"), statusEl = $("status");
-const live = on => { $("camBox").classList.toggle("hidden", !on); $("ocrBtn").classList.toggle("hidden", !on); $("flipBtn").classList.toggle("hidden", !on); };
+const live = on => { $("camBox").classList.toggle("hidden", !on); $("ocrBtn").classList.toggle("hidden", !on); $("flipBtn").classList.toggle("hidden", !on); $("autoOcrRow").classList.toggle("hidden", !on); };
 let stream = null, facing = "environment", scanning = false, found = false;
 const canvas = document.createElement("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -127,16 +130,23 @@ function parseWifiQR(text) {
 
 // 화면 글자에서 이름/비밀번호 추출
 function parseWifiText(text) {
-  const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  const grab = re => {
+  const lines = text.split(/\r?\n/).map(s => s.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const clean = v => v.replace(/^[\s:：=\-]+/, "").replace(/^["'“”‘’]|["'“”‘’]$/g, "").trim();
+  const grab = (re, skip) => {
     for (let i = 0; i < lines.length; i++) {
       const m = lines[i].match(re);
-      if (m) { const v = (m[1] || "").trim() || (lines[i + 1] || "").trim(); if (v) return v; }
+      if (!m) continue;
+      let v = clean(m[1] || "");
+      if (!v && lines[i + 1] && !(skip && skip.test(lines[i + 1]))) v = clean(lines[i + 1]);
+      if (v) return v;
     }
     return "";
   };
-  const ssid = grab(/(?:ssid|network(?:\s*name)?|wi-?fi(?:\s*name)?|와이파이(?:\s*이름)?|네트워크(?:\s*이름)?|공유기(?:\s*이름)?)\s*[:：=]\s*(.*)$/i);
-  const pw = grab(/(?:password|passcode|passphrase|pw|pwd|key|비밀번호|비번|암호|패스워드)\s*[:：=]\s*(.*)$/i);
+  const pwLabel = /(?:password|passcode|passphrase|pwd|pw|비밀\s*번호|비번|암호|패스워드)/i;
+  const ssidLabel = /(?:ssid|network\s*name|wi-?\s?fi\s*(?:name|network)?|wlan|네트워크(?:\s*이름)?|와이\s*파이(?:\s*이름)?|공유기(?:\s*이름)?|이름)/i;
+  const pw = grab(new RegExp(pwLabel.source + "\\s*[:：=]?\\s*(.*)$", "i"), ssidLabel);
+  let ssid = grab(new RegExp("^(?:.*?\\s)?" + ssidLabel.source + "\\s*[:：=]?\\s*(.*)$", "i"), pwLabel);
+  if (pwLabel.test(ssid)) ssid = "";
   return ssid || pw ? { ssid, pw, type: "WPA" } : null;
 }
 
@@ -179,12 +189,35 @@ function tick() {
       const wifi = parseWifiQR(code.data);
       if (wifi) { found = true; showResult(wifi, "QR 코드"); return; }
       setStatus("QR은 읽었지만 와이파이 코드가 아니에요.", "err");
+    } else if ($("autoOcr").checked && !ocrBusy && typeof Tesseract !== "undefined" && Date.now() - lastOcr > 2500) {
+      lastOcr = Date.now();
+      const snap = document.createElement("canvas");
+      snap.width = w; snap.height = h;
+      snap.getContext("2d").drawImage(canvas, 0, 0);
+      autoOcrFrame(snap);
     }
   }
   requestAnimationFrame(tick);
 }
 
 /* ---------- OCR ---------- */
+let ocrWorker = null, ocrBusy = false, lastOcr = 0;
+async function getOcrWorker() {
+  if (!ocrWorker) ocrWorker = await Tesseract.createWorker(["kor", "eng"]);
+  return ocrWorker;
+}
+async function autoOcrFrame(cv) {
+  ocrBusy = true;
+  try {
+    setStatus("글자를 읽는 중… 이름과 비밀번호가 함께 보이게 비춰 주세요.");
+    const w = await getOcrWorker();
+    const { data } = await w.recognize(cv);
+    const wifi = parseWifiText(data.text);
+    if (scanning && !found && wifi && wifi.ssid && wifi.pw) { found = true; showResult(wifi, "화면 글자"); }
+  } catch (e) { setStatus("글자 인식 실패: " + (e.message || e), "err"); lastOcr = Date.now() + 10000; }
+  ocrBusy = false;
+}
+
 async function recognize(cv) {
   // 1) Claude 비전(sample) 사용 가능하면 우선, 2) 아니면 Tesseract
   try {
@@ -201,9 +234,7 @@ async function recognize(cv) {
   } catch (e) { /* 아래 Tesseract로 */ }
   if (typeof Tesseract === "undefined") throw new Error("글자 인식 라이브러리를 불러오지 못했어요");
   setStatus("글자 인식 중… (처음엔 언어 데이터를 받느라 시간이 걸려요)");
-  const { data } = await Tesseract.recognize(cv, "kor+eng", {
-    logger: m => { if (m.status === "recognizing text") setStatus("글자 인식 중… " + Math.round(m.progress * 100) + "%"); }
-  });
+  const { data } = await (await getOcrWorker()).recognize(cv);
   return parseWifiText(data.text);
 }
 
